@@ -38,10 +38,19 @@ export default function AuctionHousePage() {
     setSelectedGame,
   ] = useState<Game>(wowGame)
 
+  /*
+   * Region starts empty.
+   *
+   * This means:
+   * 1. User chooses a region
+   * 2. Realms are loaded
+   * 3. User chooses a realm
+   * 4. Auctions are loaded
+   */
   const [
     region,
     setRegion,
-  ] = useState<Region>('eu')
+  ] = useState<Region | ''>('')
 
   const [
     realms,
@@ -61,7 +70,7 @@ export default function AuctionHousePage() {
   const [
     loadingRealms,
     setLoadingRealms,
-  ] = useState(true)
+  ] = useState(false)
 
   const [
     loadingAuctions,
@@ -79,101 +88,197 @@ export default function AuctionHousePage() {
   ] = useState(1)
 
   /*
-   * Load realms whenever the region changes.
+   * --------------------------------------------------
+   * LOAD REALMS WHEN A REGION IS SELECTED
+   * --------------------------------------------------
    */
-  useEffect(() => {
-  const loadRealms = async () => {
-    try {
-      setLoadingRealms(true)
-      setError(null)
 
+  useEffect(() => {
+    /*
+     * No region selected.
+     *
+     * Do not request anything.
+     */
+    if (!region) {
       setRealms([])
       setSelectedRealmId(null)
       setAuctions([])
-      setCurrentPage(1)
-
-      const res = await fetch(
-        `/api/wow/auctions?region=${region}`,
-        {
-          cache: 'no-store',
-        }
-      )
-
-      const text = await res.text()
-
-      console.log('REALM API STATUS:', res.status)
-      console.log('REALM API RESPONSE:', text)
-
-      if (!res.ok) {
-        throw new Error(
-          text ||
-            `Failed to fetch realms (${res.status})`
-        )
-      }
-
-      if (!text.trim()) {
-        throw new Error(
-          'Realm API returned an empty response'
-        )
-      }
-
-      const data = JSON.parse(text)
-
-      console.log('REALM DATA:', data)
-      console.log('REALMS:', data.realms)
-
-      if (!Array.isArray(data.realms)) {
-        throw new Error(
-          'Realm API did not return a realms array'
-        )
-      }
-
-      setRealms(data.realms)
-
-      if (data.realms.length > 0) {
-        setSelectedRealmId(data.realms[0].id)
-      } else {
-        throw new Error(
-          `Blizzard returned 0 realms for ${region.toUpperCase()}`
-        )
-      }
-    } catch (err) {
-      console.error(
-        'FAILED TO LOAD REALMS:',
-        err
-      )
-
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to fetch realms'
-      )
-    } finally {
       setLoadingRealms(false)
-    }
-  }
-
-  loadRealms()
-}, [region])
-
-  /*
-   * Load auctions whenever the selected
-   * realm changes.
-   */
-  useEffect(() => {
-    if (
-      selectedRealmId === null
-    ) {
+      setLoadingAuctions(false)
+      setCurrentPage(1)
       return
     }
+
+    let cancelled = false
+
+    const loadRealms = async () => {
+      try {
+        setLoadingRealms(true)
+        setError(null)
+
+        /*
+         * Clear anything belonging to the
+         * previous region.
+         */
+        setRealms([])
+        setSelectedRealmId(null)
+        setAuctions([])
+        setCurrentPage(1)
+
+        /*
+         * This request ONLY gets the realm list.
+         *
+         * It does NOT request auctions.
+         */
+        const res = await fetch(
+          `/api/wow/auctions?region=${region}`,
+          {
+            cache: 'no-store',
+          }
+        )
+
+        const text = await res.text()
+
+        console.log(
+          'REALM API STATUS:',
+          res.status
+        )
+
+        console.log(
+          'REALM API RESPONSE:',
+          text
+        )
+
+        if (!res.ok) {
+          throw new Error(
+            text ||
+              `Failed to fetch realms (${res.status})`
+          )
+        }
+
+        if (!text.trim()) {
+          throw new Error(
+            'Realm API returned an empty response'
+          )
+        }
+
+        const data = JSON.parse(text)
+
+        console.log(
+          'REALM DATA:',
+          data
+        )
+
+        console.log(
+          'REALMS:',
+          data.realms
+        )
+
+        if (
+          !Array.isArray(
+            data.realms
+          )
+        ) {
+          throw new Error(
+            'Realm API did not return a realms array'
+          )
+        }
+
+        if (cancelled) {
+          return
+        }
+
+        setRealms(data.realms)
+
+        /*
+         * IMPORTANT:
+         *
+         * We intentionally DO NOT do:
+         *
+         * setSelectedRealmId(data.realms[0].id)
+         *
+         * The user must select the realm.
+         */
+      } catch (err) {
+        if (cancelled) {
+          return
+        }
+
+        console.error(
+          'FAILED TO LOAD REALMS:',
+          err
+        )
+
+        setRealms([])
+        setSelectedRealmId(null)
+        setAuctions([])
+
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to fetch realms'
+        )
+      } finally {
+        if (!cancelled) {
+          setLoadingRealms(false)
+        }
+      }
+    }
+
+    loadRealms()
+
+    return () => {
+      cancelled = true
+    }
+  }, [region])
+
+  /*
+   * --------------------------------------------------
+   * LOAD AUCTIONS ONLY WHEN A REALM IS SELECTED
+   * --------------------------------------------------
+   */
+
+  useEffect(() => {
+    /*
+     * No region or no realm selected.
+     *
+     * Absolutely NO auction request.
+     */
+    if (
+      !region ||
+      selectedRealmId === null
+    ) {
+      setAuctions([])
+      setLoadingAuctions(false)
+      return
+    }
+
+    let cancelled = false
 
     const loadAuctions =
       async () => {
         try {
           setLoadingAuctions(true)
           setError(null)
+          setAuctions([])
           setCurrentPage(1)
 
+          console.log(
+            'LOADING AUCTIONS:',
+            {
+              region,
+              realmId:
+                selectedRealmId,
+            }
+          )
+
+          /*
+           * THIS is the only request that
+           * loads auction data.
+           *
+           * It only runs after the user
+           * has selected a realm.
+           */
           const res = await fetch(
             `/api/wow/auctions?region=${region}&realmId=${selectedRealmId}`,
             {
@@ -184,7 +289,22 @@ export default function AuctionHousePage() {
           const text =
             await res.text()
 
+          console.log(
+            'AUCTION API STATUS:',
+            res.status
+          )
+
           if (!res.ok) {
+            /*
+             * Give a clearer message for
+             * Blizzard rate limiting.
+             */
+            if (res.status === 429) {
+              throw new Error(
+                'Blizzard is rate limiting auction requests. Please wait a moment and try again.'
+              )
+            }
+
             throw new Error(
               text ||
                 `Failed to fetch auctions (${res.status})`
@@ -200,15 +320,29 @@ export default function AuctionHousePage() {
           const data =
             JSON.parse(text)
 
-          setAuctions(
+          if (cancelled) {
+            return
+          }
+
+          const auctionData =
             Array.isArray(
               data.auctions
             )
               ? data.auctions
               : []
+
+          setAuctions(
+            auctionData
           )
         } catch (err) {
-          console.error(err)
+          if (cancelled) {
+            return
+          }
+
+          console.error(
+            'FAILED TO LOAD AUCTIONS:',
+            err
+          )
 
           setAuctions([])
 
@@ -218,19 +352,28 @@ export default function AuctionHousePage() {
               : 'Failed to fetch auctions'
           )
         } finally {
-          setLoadingAuctions(false)
+          if (!cancelled) {
+            setLoadingAuctions(false)
+          }
         }
       }
 
     loadAuctions()
+
+    return () => {
+      cancelled = true
+    }
   }, [
     region,
     selectedRealmId,
   ])
 
   /*
-   * Pagination
+   * --------------------------------------------------
+   * PAGINATION
+   * --------------------------------------------------
    */
+
   const totalPages =
     Math.ceil(
       auctions.length /
@@ -321,13 +464,29 @@ export default function AuctionHousePage() {
               <select
                 id="region"
                 value={region}
-                onChange={(event) =>
-                  setRegion(
-                    event.target.value as Region
-                  )
-                }
+                onChange={(event) => {
+                  const value =
+                    event.target.value as
+                      | Region
+                      | ''
+
+                  setRegion(value)
+
+                  /*
+                   * Clear everything immediately
+                   * when the region changes.
+                   */
+                  setSelectedRealmId(null)
+                  setAuctions([])
+                  setCurrentPage(1)
+                  setError(null)
+                }}
                 className="rounded-lg border border-gray-700 bg-gray-950 px-4 py-2.5 text-white outline-none transition focus:border-blue-500"
               >
+                <option value="">
+                  Select a region...
+                </option>
+
                 <option value="eu">
                   Europe
                 </option>
@@ -353,20 +512,48 @@ export default function AuctionHousePage() {
                   selectedRealmId ??
                   ''
                 }
-                onChange={(event) =>
-                  setSelectedRealmId(
-                    Number(
-                      event.target.value
+                onChange={(event) => {
+                  const value =
+                    event.target.value
+
+                  /*
+                   * Empty selection means
+                   * no realm and therefore
+                   * no auction request.
+                   */
+                  if (!value) {
+                    setSelectedRealmId(
+                      null
                     )
+                    setAuctions([])
+                    setCurrentPage(1)
+                    return
+                  }
+
+                  setSelectedRealmId(
+                    Number(value)
                   )
-                }
+
+                  /*
+                   * Clear old realm auctions
+                   * immediately.
+                   */
+                  setAuctions([])
+                  setCurrentPage(1)
+                  setError(null)
+                }}
                 disabled={
+                  !region ||
                   loadingRealms ||
                   realms.length === 0
                 }
                 className="rounded-lg border border-gray-700 bg-gray-950 px-4 py-2.5 text-white outline-none transition focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loadingRealms ? (
+                {!region ? (
+                  <option value="">
+                    Select a region first
+                  </option>
+                ) : loadingRealms ? (
                   <option value="">
                     Loading realms...
                   </option>
@@ -376,16 +563,24 @@ export default function AuctionHousePage() {
                     No realms found
                   </option>
                 ) : (
-                  realms.map(
-                    (realm) => (
-                      <option
-                        key={`${realm.id}-${realm.slug}`}
-                        value={realm.id}
-                      >
-                        {realm.name}
-                      </option>
-                    )
-                  )
+                  <>
+                    <option value="">
+                      Select a realm...
+                    </option>
+
+                    {realms.map(
+                      (realm) => (
+                        <option
+                          key={`${realm.id}-${realm.slug}`}
+                          value={
+                            realm.id
+                          }
+                        >
+                          {realm.name}
+                        </option>
+                      )
+                    )}
+                  </>
                 )}
               </select>
             </div>
@@ -549,3 +744,4 @@ export default function AuctionHousePage() {
     </div>
   )
 }
+
