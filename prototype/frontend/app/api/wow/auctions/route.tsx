@@ -1,26 +1,24 @@
 import { NextResponse } from 'next/server'
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const connectedRealmId = searchParams.get('realmId') || '509'
-  const region = process.env.BLIZZARD_REGION || 'eu'
+export async function GET() {
+  const clientId = process.env.BLIZZARD_CLIENT_ID
+  const clientSecret = process.env.BLIZZARD_CLIENT_SECRET
 
-  // Get token
-  const tokenRes = await fetch('http://localhost:3000/api/blizzard/token')
-  const { access_token } = await tokenRes.json()
-
-  // Fetch auctions
-  const res = await fetch(
-    `https://${region}.api.blizzard.com/data/wow/connected-realm/${connectedRealmId}/auctions?namespace=dynamic-${region}&locale=en_US`,
-    {
-      headers: { 'Authorization': `Bearer ${access_token}` },
-    }
-  )
-
-  if (!res.ok) {
-    return NextResponse.json({ error: res.statusText }, { status: res.status })
+  if (!clientId || !clientSecret) {
+    return NextResponse.json({ error: 'Missing credentials' }, { status: 500 })
   }
 
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+
+  const res = await fetch('https://oauth.battle.net/token', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  })
+
   const data = await res.json()
-  return NextResponse.json(data)
+  return NextResponse.json({ access_token: data.access_token })
 }

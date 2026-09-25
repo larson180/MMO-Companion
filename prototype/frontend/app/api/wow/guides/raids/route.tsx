@@ -1,6 +1,6 @@
 "use client";
 
-export default function ah() {
+export default function raids() {
 
   return (
     <div className="flex min-h-screen flex-col bg-gray-950">
