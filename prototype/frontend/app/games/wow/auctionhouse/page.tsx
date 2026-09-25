@@ -38,15 +38,6 @@ export default function AuctionHousePage() {
     setSelectedGame,
   ] = useState<Game>(wowGame)
 
-  /*
-   * Region starts empty.
-   *
-   * This means:
-   * 1. User chooses a region
-   * 2. Realms are loaded
-   * 3. User chooses a realm
-   * 4. Auctions are loaded
-   */
   const [
     region,
     setRegion,
@@ -66,6 +57,23 @@ export default function AuctionHousePage() {
     auctions,
     setAuctions,
   ] = useState<Auction[]>([])
+
+  /*
+   * Stores item names by item ID.
+   *
+   * Example:
+   *
+   * {
+   *   2770: "Copper Ore",
+   *   2447: "Peacebloom"
+   * }
+   */
+  const [
+    itemNames,
+    setItemNames,
+  ] = useState<
+    Record<number, string>
+  >({})
 
   const [
     loadingRealms,
@@ -94,18 +102,15 @@ export default function AuctionHousePage() {
    */
 
   useEffect(() => {
-    /*
-     * No region selected.
-     *
-     * Do not request anything.
-     */
     if (!region) {
       setRealms([])
       setSelectedRealmId(null)
       setAuctions([])
+      setItemNames({})
       setLoadingRealms(false)
       setLoadingAuctions(false)
       setCurrentPage(1)
+
       return
     }
 
@@ -116,20 +121,12 @@ export default function AuctionHousePage() {
         setLoadingRealms(true)
         setError(null)
 
-        /*
-         * Clear anything belonging to the
-         * previous region.
-         */
         setRealms([])
         setSelectedRealmId(null)
         setAuctions([])
+        setItemNames({})
         setCurrentPage(1)
 
-        /*
-         * This request ONLY gets the realm list.
-         *
-         * It does NOT request auctions.
-         */
         const res = await fetch(
           `/api/wow/auctions?region=${region}`,
           {
@@ -191,13 +188,7 @@ export default function AuctionHousePage() {
         setRealms(data.realms)
 
         /*
-         * IMPORTANT:
-         *
-         * We intentionally DO NOT do:
-         *
-         * setSelectedRealmId(data.realms[0].id)
-         *
-         * The user must select the realm.
+         * Do NOT automatically select a realm.
          */
       } catch (err) {
         if (cancelled) {
@@ -212,6 +203,7 @@ export default function AuctionHousePage() {
         setRealms([])
         setSelectedRealmId(null)
         setAuctions([])
+        setItemNames({})
 
         setError(
           err instanceof Error
@@ -234,22 +226,19 @@ export default function AuctionHousePage() {
 
   /*
    * --------------------------------------------------
-   * LOAD AUCTIONS ONLY WHEN A REALM IS SELECTED
+   * LOAD AUCTIONS WHEN A REALM IS SELECTED
    * --------------------------------------------------
    */
 
   useEffect(() => {
-    /*
-     * No region or no realm selected.
-     *
-     * Absolutely NO auction request.
-     */
     if (
       !region ||
       selectedRealmId === null
     ) {
       setAuctions([])
+      setItemNames({})
       setLoadingAuctions(false)
+
       return
     }
 
@@ -261,6 +250,7 @@ export default function AuctionHousePage() {
           setLoadingAuctions(true)
           setError(null)
           setAuctions([])
+          setItemNames({})
           setCurrentPage(1)
 
           console.log(
@@ -272,13 +262,6 @@ export default function AuctionHousePage() {
             }
           )
 
-          /*
-           * THIS is the only request that
-           * loads auction data.
-           *
-           * It only runs after the user
-           * has selected a realm.
-           */
           const res = await fetch(
             `/api/wow/auctions?region=${region}&realmId=${selectedRealmId}`,
             {
@@ -295,10 +278,6 @@ export default function AuctionHousePage() {
           )
 
           if (!res.ok) {
-            /*
-             * Give a clearer message for
-             * Blizzard rate limiting.
-             */
             if (res.status === 429) {
               throw new Error(
                 'Blizzard is rate limiting auction requests. Please wait a moment and try again.'
@@ -345,6 +324,7 @@ export default function AuctionHousePage() {
           )
 
           setAuctions([])
+          setItemNames({})
 
           setError(
             err instanceof Error
@@ -366,6 +346,166 @@ export default function AuctionHousePage() {
   }, [
     region,
     selectedRealmId,
+  ])
+
+  /*
+   * --------------------------------------------------
+   * LOAD ITEM NAMES FOR THE CURRENT PAGE
+   * --------------------------------------------------
+   */
+
+  useEffect(() => {
+    if (
+      !region ||
+      auctions.length === 0
+    ) {
+      return
+    }
+
+    const startIndex =
+      (currentPage - 1) *
+      ITEMS_PER_PAGE
+
+    const visibleAuctions =
+      auctions.slice(
+        startIndex,
+        startIndex +
+          ITEMS_PER_PAGE
+      )
+
+    const itemIds =
+      Array.from(
+        new Set(
+          visibleAuctions
+            .map(
+              (auction) =>
+                auction.item?.id
+            )
+            .filter(
+              (
+                id
+              ): id is number =>
+                typeof id ===
+                  'number' &&
+                id > 0
+            )
+        )
+      )
+
+    if (itemIds.length === 0) {
+      return
+    }
+
+    /*
+     * Don't request names we already have.
+     */
+    const missingItemIds =
+      itemIds.filter(
+        (itemId) =>
+          !itemNames[itemId]
+      )
+
+    if (
+      missingItemIds.length === 0
+    ) {
+      return
+    }
+
+    let cancelled = false
+
+    const loadItemNames =
+      async () => {
+        try {
+          console.log(
+            'LOADING ITEM NAMES:',
+            missingItemIds
+          )
+
+          const res =
+            await fetch(
+              `/api/wow/auctions?region=${region}&itemIds=${missingItemIds.join(',')}`,
+              {
+                cache: 'no-store',
+              }
+            )
+
+          const text =
+            await res.text()
+
+          console.log(
+            'ITEM NAME API STATUS:',
+            res.status
+          )
+
+          console.log(
+            'ITEM NAME API RESPONSE:',
+            text
+          )
+
+          if (!res.ok) {
+            throw new Error(
+              text ||
+                `Failed to fetch item names (${res.status})`
+            )
+          }
+
+          if (!text.trim()) {
+            throw new Error(
+              'Item name API returned an empty response'
+            )
+          }
+
+          const data =
+            JSON.parse(text)
+
+          if (
+            cancelled ||
+            !data.itemNames
+          ) {
+            return
+          }
+
+          const names =
+            Object.fromEntries(
+              Object.entries(
+                data.itemNames
+              ).map(
+                ([
+                  id,
+                  name,
+                ]) => [
+                  Number(id),
+                  String(name),
+                ]
+              )
+            )
+
+          setItemNames(
+            (previous) => ({
+              ...previous,
+              ...names,
+            })
+          )
+        } catch (error) {
+          if (!cancelled) {
+            console.error(
+              'FAILED TO LOAD ITEM NAMES:',
+              error
+            )
+          }
+        }
+      }
+
+    loadItemNames()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    region,
+    auctions,
+    currentPage,
+    itemNames,
   ])
 
   /*
@@ -472,12 +612,9 @@ export default function AuctionHousePage() {
 
                   setRegion(value)
 
-                  /*
-                   * Clear everything immediately
-                   * when the region changes.
-                   */
                   setSelectedRealmId(null)
                   setAuctions([])
+                  setItemNames({})
                   setCurrentPage(1)
                   setError(null)
                 }}
@@ -516,17 +653,14 @@ export default function AuctionHousePage() {
                   const value =
                     event.target.value
 
-                  /*
-                   * Empty selection means
-                   * no realm and therefore
-                   * no auction request.
-                   */
                   if (!value) {
                     setSelectedRealmId(
                       null
                     )
                     setAuctions([])
+                    setItemNames({})
                     setCurrentPage(1)
+
                     return
                   }
 
@@ -534,11 +668,8 @@ export default function AuctionHousePage() {
                     Number(value)
                   )
 
-                  /*
-                   * Clear old realm auctions
-                   * immediately.
-                   */
                   setAuctions([])
+                  setItemNames({})
                   setCurrentPage(1)
                   setError(null)
                 }}
@@ -664,12 +795,12 @@ export default function AuctionHousePage() {
                               className="border-t border-gray-800 hover:bg-gray-900/70"
                             >
                               <td className="p-3 sm:p-4">
-                                #
-                                {
+                                {itemNames[
                                   auction
                                     .item
                                     .id
-                                }
+                                ] ??
+                                  'Unknown item'}
                               </td>
 
                               <td className="p-3 sm:p-4">
@@ -744,4 +875,3 @@ export default function AuctionHousePage() {
     </div>
   )
 }
-
