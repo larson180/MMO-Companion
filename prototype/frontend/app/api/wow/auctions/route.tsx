@@ -1,184 +1,355 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export async function GET(request: NextRequest) {
-  try {
-    const realmId = request.nextUrl.searchParams.get('realmId')
+type BlizzardTokenResponse = {
+  access_token: string
+  token_type: string
+  expires_in: number
+}
 
-    if (!realmId) {
-      return NextResponse.json(
-        { error: 'Missing realmId' },
-        { status: 400 }
-      )
+type BlizzardRealm = {
+  id: number
+  name: string
+  slug: string
+}
+
+type BlizzardConnectedRealm = {
+  id: number
+  realms: BlizzardRealm[]
+}
+
+type BlizzardConnectedRealmIndex = {
+  connected_realms: {
+    href: string
+  }[]
+}
+
+async function getAccessToken(
+  clientId: string,
+  clientSecret: string
+) {
+  const credentials = Buffer.from(
+    `${clientId}:${clientSecret}`
+  ).toString('base64')
+
+  const response = await fetch(
+    'https://oauth.battle.net/token',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        'Content-Type':
+          'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+      cache: 'no-store',
     }
+  )
 
-    const clientId = process.env.BLIZZARD_CLIENT_ID
-    const clientSecret = process.env.BLIZZARD_CLIENT_SECRET
-    const region = process.env.BLIZZARD_REGION || 'eu'
+  const text = await response.text()
+
+  if (!response.ok) {
+    throw new Error(
+      `Blizzard OAuth failed (${response.status}): ${text}`
+    )
+  }
+
+  const data =
+    JSON.parse(text) as BlizzardTokenResponse
+
+  if (!data.access_token) {
+    throw new Error(
+      'Blizzard OAuth did not return an access token'
+    )
+  }
+
+  return data.access_token
+}
+
+export async function GET(
+  request: NextRequest
+) {
+  try {
+    const clientId =
+      process.env.BLIZZARD_CLIENT_ID
+
+    const clientSecret =
+      process.env.BLIZZARD_CLIENT_SECRET
 
     if (!clientId || !clientSecret) {
       return NextResponse.json(
-        { error: 'Missing Blizzard credentials' },
+        {
+          error:
+            'Missing BLIZZARD_CLIENT_ID or BLIZZARD_CLIENT_SECRET',
+        },
         { status: 500 }
       )
     }
 
-    // Get Blizzard access token
-    const auth = Buffer.from(
-      `${clientId}:${clientSecret}`
-    ).toString('base64')
+    const searchParams =
+      request.nextUrl.searchParams
 
-    const tokenRes = await fetch(
-      'https://oauth.battle.net/token',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${auth}`,
-          'Content-Type':
-            'application/x-www-form-urlencoded',
-        },
-        body: 'grant_type=client_credentials',
-        cache: 'no-store',
-      }
-    )
+    const region =
+      searchParams.get('region') || 'eu'
 
-    const tokenText = await tokenRes.text()
+    const realmId =
+      searchParams.get('realmId')
 
-    console.log(
-      'Blizzard token status:',
-      tokenRes.status
-    )
-
-    console.log(
-      'Blizzard token response:',
-      tokenText
-    )
-
-    if (!tokenRes.ok) {
-      return NextResponse.json(
-        {
-          error: 'Blizzard authentication failed',
-          status: tokenRes.status,
-          details: tokenText || 'Empty response',
-        },
-        { status: tokenRes.status }
-      )
-    }
-
-    if (!tokenText.trim()) {
+    if (
+      region !== 'eu' &&
+      region !== 'us'
+    ) {
       return NextResponse.json(
         {
           error:
-            'Blizzard authentication returned an empty response',
+            'Invalid region. Use eu or us.',
         },
-        { status: 502 }
+        { status: 400 }
       )
     }
 
-    let tokenData
-
-    try {
-      tokenData = JSON.parse(tokenText)
-    } catch {
-      return NextResponse.json(
-        {
-          error:
-            'Blizzard authentication returned invalid JSON',
-          details: tokenText,
-        },
-        { status: 502 }
-      )
-    }
-
-    if (!tokenData.access_token) {
-      return NextResponse.json(
-        {
-          error:
-            'Blizzard authentication response did not contain an access token',
-          details: tokenData,
-        },
-        { status: 502 }
-      )
-    }
-
-    // Determine locale
     const locale =
-      region === 'eu' ? 'en_GB' : 'en_US'
+      region === 'eu'
+        ? 'en_GB'
+        : 'en_US'
 
-    // Get auctions
-    const auctionUrl =
-      `https://${region}.api.blizzard.com/data/wow/connected-realm/` +
-      `${realmId}/auctions` +
-      `?namespace=dynamic-${region}` +
+    const namespace =
+      `dynamic-${region}`
+
+    /*
+     * Get Blizzard OAuth token
+     */
+    const accessToken =
+      await getAccessToken(
+        clientId,
+        clientSecret
+      )
+
+    /*
+     * =========================================
+     * REALM LIST
+     * =========================================
+     *
+     * /api/wow/auctions?region=eu
+     */
+    if (!realmId) {
+      const indexUrl =
+        `https://${region}.api.blizzard.com/data/wow/connected-realm/index` +
+        `?namespace=${namespace}` +
+        `&locale=${locale}`
+
+      console.log(
+        'Fetching connected realm index:',
+        indexUrl
+      )
+
+      const indexResponse =
+        await fetch(indexUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          cache: 'no-store',
+        })
+
+      const indexText =
+        await indexResponse.text()
+
+      console.log(
+        'Connected realm index status:',
+        indexResponse.status
+      )
+
+      if (!indexResponse.ok) {
+        throw new Error(
+          `Blizzard connected realm index failed (${indexResponse.status}): ${indexText}`
+        )
+      }
+
+      const indexData =
+        JSON.parse(
+          indexText
+        ) as BlizzardConnectedRealmIndex
+
+      console.log(
+        'Connected realms found:',
+        indexData.connected_realms?.length
+      )
+
+      if (
+        !indexData.connected_realms ||
+        !Array.isArray(
+          indexData.connected_realms
+        )
+      ) {
+        throw new Error(
+          'Blizzard did not return connected_realms'
+        )
+      }
+
+      /*
+       * Blizzard returns URLs such as:
+       *
+       * https://eu.api.blizzard.com/data/wow/connected-realm/509
+       *
+       * Fetch each connected realm.
+       */
+      const realmResults =
+        await Promise.all(
+          indexData.connected_realms.map(
+            async (connectedRealm) => {
+              try {
+                const url =
+                  new URL(
+                    connectedRealm.href
+                  )
+
+                url.searchParams.set(
+                  'namespace',
+                  namespace
+                )
+
+                url.searchParams.set(
+                  'locale',
+                  locale
+                )
+
+                const response =
+                  await fetch(
+                    url.toString(),
+                    {
+                      headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                      },
+                      cache: 'no-store',
+                    }
+                  )
+
+                const text =
+                  await response.text()
+
+                if (!response.ok) {
+                  console.error(
+                    'Connected realm failed:',
+                    connectedRealm.href,
+                    response.status,
+                    text
+                  )
+
+                  return null
+                }
+
+                const data =
+                  JSON.parse(
+                    text
+                  ) as BlizzardConnectedRealm
+
+                return data
+              } catch (error) {
+                console.error(
+                  'Failed to fetch connected realm:',
+                  connectedRealm.href,
+                  error
+                )
+
+                return null
+              }
+            }
+          )
+        )
+
+      /*
+       * Flatten all realms.
+       *
+       * Multiple realms can belong to the
+       * same connected realm, so they all use
+       * the connected realm ID for auctions.
+       */
+      const realms = realmResults
+        .filter(
+          (
+            realm
+          ): realm is BlizzardConnectedRealm =>
+            realm !== null
+        )
+        .flatMap(
+          (connectedRealm) =>
+            connectedRealm.realms.map(
+              (realm) => ({
+                id: connectedRealm.id,
+                name: realm.name,
+                slug: realm.slug,
+              })
+            )
+        )
+        .sort(
+          (a, b) =>
+            a.name.localeCompare(
+              b.name
+            )
+        )
+
+      console.log(
+        'Final realms:',
+        realms.length
+      )
+
+      return NextResponse.json({
+        region,
+        realms,
+      })
+    }
+
+    /*
+     * =========================================
+     * AUCTIONS
+     * =========================================
+     *
+     * /api/wow/auctions?region=eu&realmId=509
+     */
+    const auctionsUrl =
+      `https://${region}.api.blizzard.com/data/wow/connected-realm/${realmId}/auctions` +
+      `?namespace=${namespace}` +
       `&locale=${locale}`
 
-    console.log('Auction URL:', auctionUrl)
-
-    const auctionRes = await fetch(auctionUrl, {
-      headers: {
-        Authorization: `Bearer ${tokenData.access_token}`,
-      },
-      cache: 'no-store',
-    })
-
-    const auctionText = await auctionRes.text()
-
     console.log(
-      'Blizzard auction status:',
-      auctionRes.status
+      'Fetching auctions:',
+      auctionsUrl
     )
 
-    if (!auctionRes.ok) {
-      console.error(
-        'Blizzard auction response:',
-        auctionText
-      )
-
-      return NextResponse.json(
-        {
-          error: 'Blizzard auction API failed',
-          status: auctionRes.status,
-          details:
-            auctionText || 'Empty response',
+    const auctionsResponse =
+      await fetch(auctionsUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
         },
-        { status: auctionRes.status }
+        cache: 'no-store',
+      })
+
+    const auctionsText =
+      await auctionsResponse.text()
+
+    if (!auctionsResponse.ok) {
+      throw new Error(
+        `Blizzard auctions request failed (${auctionsResponse.status}): ${auctionsText}`
       )
     }
 
-    if (!auctionText.trim()) {
-      return NextResponse.json(
-        {
-          error:
-            'Blizzard auction API returned an empty response',
-        },
-        { status: 502 }
-      )
-    }
+    const auctionsData =
+      JSON.parse(auctionsText)
 
-    let auctionData
-
-    try {
-      auctionData = JSON.parse(auctionText)
-    } catch {
-      return NextResponse.json(
-        {
-          error:
-            'Blizzard auction API returned invalid JSON',
-          details: auctionText,
-        },
-        { status: 502 }
-      )
-    }
-
-    return NextResponse.json(auctionData)
+    return NextResponse.json(
+      auctionsData
+    )
   } catch (error) {
-    console.error('Auction route error:', error)
+    console.error(
+      'WoW API error:',
+      error
+    )
 
     return NextResponse.json(
       {
         error:
           error instanceof Error
             ? error.message
-            : 'Unknown error',
+            : 'Unknown Blizzard API error',
       },
       { status: 500 }
     )
